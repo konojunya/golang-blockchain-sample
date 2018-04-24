@@ -1,2 +1,3 @@
-# golang-blockchain-example
+# golang-blockchain-sample
+
 Understand the simple Blockchain implementation in Golang.
