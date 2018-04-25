@@ -1,72 +1,54 @@
 package main
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"fmt"
-	"strconv"
 	"time"
 )
 
-// Block
+type Blockchain struct {
+	Blocks              []*Block
+	CurrentTransactions []*Transaction
+}
+
+type Transaction struct {
+	Sender    []byte
+	Recipient []byte
+	Amount    int64
+}
+
 type Block struct {
-	Timestamp     int64
-	Data          []byte
-	PrevBlockHash []byte
-	Hash          []byte
+	Index        int
+	Timestamp    int64
+	Transactions []*Transaction
+	Proof        int64
+	PreviousHash []byte
 }
 
-func (b *Block) SetHash() {
-	timestamp := []byte(strconv.FormatInt(b.Timestamp, 10))
-	headers := bytes.Join([][]byte{b.PrevBlockHash, b.Data, timestamp}, []byte{})
-	hash := sha256.Sum256(headers)
-
-	b.Hash = hash[:]
-}
-
-func newBlock(data string, prevBlockHash []byte) *Block {
+func (bc *Blockchain) NewBlock(proof int64, previousHash []byte) *Block {
 	block := &Block{
-		Timestamp:     time.Now().Unix(),
-		Data:          []byte(data),
-		PrevBlockHash: prevBlockHash,
-		Hash:          []byte{},
+		Index:        len(bc.Blocks) + 1,
+		Timestamp:    time.Now().Unix(),
+		Transactions: bc.CurrentTransactions,
+		Proof:        proof,
+		PreviousHash: previousHash,
 	}
-	block.SetHash()
+
+	bc.CurrentTransactions = nil
+	bc.Blocks = append(bc.Blocks, block)
 
 	return block
 }
 
-// BlockChain
-type Blockchain struct {
-	Blocks []*Block
-}
-
-func (bc *Blockchain) AddBlock(data string) {
-	prevBlock := bc.Blocks[len(bc.Blocks)-1]
-	newBlock := newBlock(data, prevBlock.Hash)
-	bc.Blocks = append(bc.Blocks, newBlock)
-}
-
-func newGenesisBlock() *Block {
-	return newBlock("Genesis Block", []byte{})
-}
-
-func newBlockchain() *Blockchain {
-	return &Blockchain{
-		Blocks: []*Block{newGenesisBlock()},
+func (bc *Blockchain) NewTransaction(sender, recipient []byte, amount int64) int {
+	transaction := &Transaction{
+		Sender:    sender,
+		Recipient: recipient,
+		Amount:    amount,
 	}
+	bc.CurrentTransactions = append(bc.CurrentTransactions, transaction)
+
+	return bc.Blocks[len(bc.Blocks)-1].Index + 1
 }
 
 func main() {
-	bc := newBlockchain()
 
-	bc.AddBlock("Send 1 BTC to Ivan")
-	bc.AddBlock("Send 2 more BTC to Ivan")
-
-	for _, block := range bc.Blocks {
-		fmt.Printf("Prev. hash: %x\n", block.PrevBlockHash)
-		fmt.Printf("Data: %s\n", block.Data)
-		fmt.Printf("Hash: %x\n", block.Hash)
-		fmt.Println("----------------------------------")
-	}
 }
