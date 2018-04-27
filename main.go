@@ -1,37 +1,48 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
 
+// Blockchain ブロックチェーンの構造体
 type Blockchain struct {
-	Blocks              []*Block
-	CurrentTransactions []*Transaction
+	Blocks              []*Block       `json:"blocks"`
+	CurrentTransactions []*Transaction `json:"current_transactions"`
+	Nodes               []*Node        `json:"nodes"`
 }
 
+// Transaction トランザクションの構造体
 type Transaction struct {
-	Sender    string
-	Recipient string
-	Amount    int64
+	Sender    string `json:"sender"`
+	Recipient string `json:"recipient"`
+	Amount    int64  `json:"amount"`
 }
 
+// Block ブロックの構造体
 type Block struct {
-	Index        int
-	Timestamp    int64
-	Transactions []*Transaction
-	Proof        int64
-	PreviousHash string
+	Index        int            `json:"index"`
+	Timestamp    int64          `json:"timestamp"`
+	Transactions []*Transaction `json:"transactions"`
+	Proof        int64          `json:"proof"`
+	PreviousHash string         `json:"previous_hash"`
+	Hash         string         `json:"hash"`
 }
 
+// Node ノード
+type Node struct {
+	Address string `json:"address"`
+}
+
+// NewBlock ブロックを追加する
 func (bc *Blockchain) NewBlock(proof int64, previousHash string) *Block {
 	block := &Block{
 		Index:        len(bc.Blocks) + 1,
@@ -40,6 +51,7 @@ func (bc *Blockchain) NewBlock(proof int64, previousHash string) *Block {
 		Proof:        proof,
 		PreviousHash: previousHash,
 	}
+	block.SetHash()
 
 	bc.CurrentTransactions = nil
 	bc.Blocks = append(bc.Blocks, block)
@@ -47,6 +59,18 @@ func (bc *Blockchain) NewBlock(proof int64, previousHash string) *Block {
 	return block
 }
 
+func (b *Block) SetHash() {
+	bytes, err := json.Marshal(b)
+	if err != nil {
+		panic(err)
+	}
+
+	s := sha256.New()
+	s.Write(bytes)
+	b.Hash = fmt.Sprintf("%x", s.Sum(nil))
+}
+
+// NewTransaction トランザクションを追加する
 func (bc *Blockchain) NewTransaction(sender, recipient string, amount int64) int {
 	transaction := &Transaction{
 		Sender:    sender,
@@ -58,13 +82,13 @@ func (bc *Blockchain) NewTransaction(sender, recipient string, amount int64) int
 	return bc.Blocks[len(bc.Blocks)-1].Index + 1
 }
 
-func (bc *Blockchain) ProofOfWork(last_block *Block) int64 {
-	lastProof := last_block.Proof
-	lastHash := bc.Hash(last_block)
+// ProofOfWork PoWをする
+func (bc *Blockchain) ProofOfWork(lastBlock *Block) int64 {
+	lastProof := lastBlock.Proof
+	lastHash := lastBlock.Hash
 
-	proof := 0
+	proof := int64(0)
 	for !bc.ValidProof(lastProof, proof, lastHash) {
-		fmt.Printf("HASH: %v\nProof: %v\n", lastHash, proof)
 		proof++
 	}
 
@@ -72,33 +96,96 @@ func (bc *Blockchain) ProofOfWork(last_block *Block) int64 {
 
 }
 
-func (bc *Blockchain) Hash(block *Block) string {
-	b, err := json.Marshal(block)
-	if err != nil {
-		panic(err)
-	}
-
-	s := sha256.New()
-	s.Write(b)
-	return fmt.Sprintf("%x", s.Sum(nil))
-}
-
-func (bc *Blockchain) ValidProof(last_proof int64, proof int, last_hash string) bool {
-	lpb := make([]byte, binary.MaxVarintLen64)
-	binary.PutVarint(lpb, last_proof)
-
-	pb := make([]byte, binary.MaxVarintLen64)
-	binary.PutVarint(pb, int64(proof))
-
-	headers := bytes.Join([][]byte{lpb, pb, []byte(last_hash)}, []byte{})
+// ValidProof Proofが正しいか
+func (bc *Blockchain) ValidProof(lastProof int64, proof int64, lastHash string) bool {
+	headers := []byte(strconv.FormatInt(lastProof, 10) + strconv.FormatInt(proof, 10) + lastHash)
 	s := sha256.New()
 	s.Write(headers)
 	hash := fmt.Sprintf("%x", s.Sum(nil))
+	fmt.Println(hash)
 	return hash[:4] == "0000"
 }
 
 func (bc *Blockchain) newGenesisBlock() {
 	bc.NewBlock(100, "1")
+}
+
+func (bc *Blockchain) registerNode(addr string) {
+	parsedURL, err := url.Parse(addr)
+	if err != nil {
+		panic(err)
+	}
+
+	node := &Node{
+		Address: parsedURL.Host,
+	}
+	bc.Nodes = append(bc.Nodes, node)
+}
+
+func (bc *Blockchain) validChain(chain []*Block) bool {
+	lastBlock := chain[0]
+	currentIndex := 1
+	for currentIndex < len(chain) {
+		block := chain[currentIndex]
+		if block.PreviousHash != lastBlock.Hash {
+			return false
+		}
+		fmt.Println(lastBlock.Proof)
+		fmt.Println(block.Proof)
+		fmt.Println(lastBlock.PreviousHash)
+		if !bc.ValidProof(lastBlock.Proof, block.Proof, lastBlock.PreviousHash) {
+			fmt.Println("proofが正常じゃないよ")
+			return false
+		}
+
+		lastBlock = block
+		currentIndex++
+	}
+
+	return true
+}
+
+func (bc *Blockchain) resolveConflicts() bool {
+	neighbours := bc.Nodes
+	var newChain []*Block
+	maxLength := len(bc.Blocks)
+
+	for _, node := range neighbours {
+		response, err := http.Get("http://" + node.Address + "/chain")
+		if err != nil {
+			panic(err)
+		}
+
+		defer response.Body.Close()
+
+		if response.StatusCode == 200 {
+			var res struct {
+				Length int      `json:"length"`
+				Chain  []*Block `json:"chain"`
+			}
+			err := json.NewDecoder(response.Body).Decode(&res)
+			if err != nil {
+				panic(err)
+			}
+
+			length := res.Length
+			chain := res.Chain
+			if length > maxLength && bc.validChain(chain) {
+				maxLength = length
+				newChain = chain
+			}
+		}
+	}
+
+	fmt.Println("new chain length")
+	fmt.Println(len(newChain))
+	if len(newChain) >= 1 {
+		bc.Blocks = newChain
+		return true
+	}
+
+	return false
+
 }
 
 func main() {
@@ -111,10 +198,7 @@ func main() {
 		lastBlock := bc.Blocks[len(bc.Blocks)-1]
 		proof := bc.ProofOfWork(lastBlock)
 
-		bc.NewTransaction("0", "asdfoiasodifjasoidfjaosjf", 1)
-
-		previousHash := bc.Hash(lastBlock)
-		block := bc.NewBlock(proof, previousHash)
+		block := bc.NewBlock(proof, lastBlock.Hash)
 		c.JSON(http.StatusOK, gin.H{
 			"message":       "New Block Forged",
 			"index":         block.Index,
@@ -126,7 +210,7 @@ func main() {
 
 	r.POST("/transactions/new", func(c *gin.Context) {
 		var transaction Transaction
-		err := c.BindJSON(transaction)
+		err := c.BindJSON(&transaction)
 		if err != nil {
 			panic(err)
 		}
@@ -144,5 +228,46 @@ func main() {
 		})
 	})
 
-	r.Run(":5000")
+	r.POST("/nodes/register", func(c *gin.Context) {
+		var nodes struct {
+			Address []string `json:"nodes"`
+		}
+		c.BindJSON(&nodes)
+		if len(nodes.Address) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"message": "Error: Please supply a valid list of nodes",
+			})
+			return
+		}
+
+		for _, addr := range nodes.Address {
+			bc.registerNode(addr)
+		}
+
+		c.JSON(http.StatusCreated, gin.H{
+			"message":     "New nodes have been added",
+			"total_nodes": bc.Nodes,
+		})
+	})
+
+	r.GET("/nodes/resolve", func(c *gin.Context) {
+		replaced := bc.resolveConflicts()
+		if replaced {
+			c.JSON(http.StatusOK, gin.H{
+				"message":   "Our chain was replaced",
+				"new_chain": bc.Blocks,
+			})
+		} else {
+			c.JSON(http.StatusOK, gin.H{
+				"message": "Our chain is authoritative",
+				"chain":   bc.Blocks,
+			})
+		}
+	})
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "5000"
+	}
+	r.Run(":" + port)
 }
